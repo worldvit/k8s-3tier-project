@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init-config
+  namespace: himedia-3tier
+data:
+  init.sql: |
+    CREATE DATABASE IF NOT EXISTS himedia;
+    USE himedia;
+    
+    CREATE TABLE IF NOT EXISTS departments (
+        department_id INT AUTO_INCREMENT PRIMARY KEY,
+        dept_name VARCHAR(100) NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS employees (
+        employee_id INT AUTO_INCREMENT PRIMARY KEY,
+        last_name VARCHAR(50) NOT NULL,
+        first_name VARCHAR(50) NOT NULL,
+        phone VARCHAR(20),
+        address VARCHAR(200),
+        salary DECIMAL(10,2),
+        department_id INT,
+        FOREIGN KEY (department_id) REFERENCES departments(department_id)
+    );
+    
+    INSERT INTO departments (dept_name) VALUES 
+    ('Engineering'), ('Human Resources'), ('Sales'), ('Marketing'), ('Finance'), 
+    ('IT Support'), ('Legal'), ('Research & Development'), ('Customer Success'), ('Operations');
+    
+    INSERT INTO employees (last_name, first_name, phone, address, salary, department_id) VALUES 
+    ('Kim', 'Kubernet', '010-1111-1111', 'Seoul', 100000.00, 1),
+    ('Lee', 'Flask', '010-2222-2222', 'Busan', 85000.00, 2),
+    ('Park', 'Nginx', '010-3333-3333', 'Incheon', 90000.00, 3),
+    ('Choi', 'Cilium', '010-4444-4444', 'Daegu', 95000.00, 4),
+    ('Jung', 'Hubble', '010-5555-5555', 'Gwangju', 88000.00, 5),
+    ('Kang', 'MetalLB', '010-6666-6666', 'Daejeon', 92000.00, 6),
+    ('Cho', 'Docker', '010-7777-7777', 'Ulsan', 87000.00, 7),
+    ('Yoon', 'Linux', '010-8888-8888', 'Sejong', 91000.00, 8),
+    ('Jang', 'Python', '010-9999-9999', 'Jeju', 89000.00, 9),
+    ('Lim', 'Cloud', '010-0000-0000', 'Seoul', 105000.00, 10);
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-svc
+  namespace: himedia-3tier
+spec:
+  clusterIP: None
+  ports:
+  - port: 3306
+  selector:
+    app: mysql
+    tier: database
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-sts
+  namespace: himedia-3tier
+spec:
+  serviceName: "mysql-svc"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+      tier: database
+  template:
+    metadata:
+      labels:
+        app: mysql
+        tier: database
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: ROOT_PASSWORD
+        - name: MYSQL_DATABASE
+          value: "himedia"
+        ports:
+        - containerPort: 3306
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        livenessProbe:
+          exec:
+            command: ["mysqladmin", "ping", "-h", "localhost", "-uroot", "-pdkagh1."]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command: ["mysqladmin", "ping", "-h", "localhost", "-uroot", "-pdkagh1."]
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        volumeMounts:
+        - name: mysql-storage
+          mountPath: /var/lib/mysql
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+      volumes:
+      - name: mysql-storage
+        persistentVolumeClaim:
+          claimName: mysql-pvc
+      - name: init-script
+        configMap:
+          name: mysql-init-config

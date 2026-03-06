@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 01-metrics-server.yaml
+  - 03-storage.yaml
+  - 04-database.yaml
+  - 05-backend.yaml
+  - 06-frontend.yaml
+  - 07-network-policy.yaml
+
+secretGenerator:
+  - name: mysql-secret
+    namespace: himedia-3tier
+    literals:
+      - ROOT_PASSWORD=dkagh1.

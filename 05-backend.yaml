@@ -1,0 +1,137 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flask-config
+  namespace: himedia-3tier
+data:
+  app.py: |
+    from flask import Flask, jsonify
+    import pymysql, os, time, signal, sys
+
+    app = Flask(__name__)
+    
+    def get_db():
+        return pymysql.connect(
+            host=os.environ.get('DB_HOST', 'mysql-svc'),
+            user='root',
+            password=os.environ.get('DB_PASSWORD'),
+            database=os.environ.get('DB_NAME', 'himedia'),
+            cursorclass=pymysql.cursors.DictCursor
+        )
+
+    @app.route('/health')
+    def health(): return jsonify({"status": "UP"}), 200
+
+    @app.route('/api/employees')
+    def employees():
+        try:
+            conn = get_db()
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT e.last_name, e.first_name, d.dept_name, e.salary FROM employees e JOIN departments d ON e.department_id = d.department_id")
+                res = cursor.fetchall()
+            conn.close()
+            return jsonify({"status": "success", "data": res})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=5000)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: himedia-3tier
+spec:
+  ports:
+  - port: 5000
+    targetPort: 5000
+  selector:
+    app: flask
+    tier: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deploy
+  namespace: himedia-3tier
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: flask
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: flask
+        tier: backend
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector: { matchExpressions: [{ key: app, operator: In, values: [flask] }] }
+            topologyKey: "kubernetes.io/hostname"
+      initContainers:
+      - name: wait-for-db
+        image: busybox:1.28
+        command: ['sh', '-c', 'until nc -z mysql-svc 3306; do echo waiting for db; sleep 2; done;']
+      containers:
+      - name: flask
+        image: python:3.9-slim
+        command: ["/bin/bash", "-c"]
+        # 에러 해결을 위해 cryptography 패키지가 추가된 부분입니다.
+        args: ["pip install flask pymysql cryptography && python /app/app.py"]
+        lifecycle:
+          preStop:
+            exec: { command: ["sleep", "5"] }
+        env:
+        - name: DB_HOST
+          value: "mysql-svc"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: ROOT_PASSWORD
+        - name: DB_NAME
+          value: "himedia"
+        ports:
+        - containerPort: 5000
+        resources:
+          requests: { cpu: 200m, memory: 128Mi }
+          limits: { cpu: 500m, memory: 256Mi }
+        livenessProbe:
+          httpGet: { path: /health, port: 5000 }
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet: { path: /health, port: 5000 }
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: code-volume
+          mountPath: /app
+      volumes:
+      - name: code-volume
+        configMap:
+          name: flask-config
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: himedia-3tier
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-deploy
+  minReplicas: 3
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

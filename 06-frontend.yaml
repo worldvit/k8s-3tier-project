@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: himedia-3tier
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+        location / { root /usr/share/nginx/html; index index.html; }
+        location /api/ { proxy_pass http://backend-svc:5000/api/; }
+    }
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="ko">
+    <head><meta charset="UTF-8"><title>Himedia Enterprise</title></head>
+    <body style="font-family: Arial; text-align: center; padding: 50px;">
+        <h2>Himedia 사원 정보 시스템 (v3.0)</h2>
+        <button onclick="fetchData()" style="padding: 10px 20px; font-size: 16px;">사원 데이터 10건 불러오기</button>
+        <table border="1" width="80%" style="margin: 20px auto; border-collapse: collapse;">
+            <thead><tr><th>Last Name</th><th>First Name</th><th>Department</th><th>Salary</th></tr></thead>
+            <tbody id="table-body"><tr><td colspan="4">대기 중...</td></tr></tbody>
+        </table>
+        <script>
+            function fetchData() {
+                document.getElementById('table-body').innerHTML = '<tr><td colspan="4">요청 중...</td></tr>';
+                fetch('/api/employees').then(r => r.json()).then(res => {
+                    if(res.status === 'success') {
+                        let rows = res.data.map(e => `<tr><td>${e.last_name}</td><td>${e.first_name}</td><td>${e.dept_name}</td><td>$${e.salary}</td></tr>`).join('');
+                        document.getElementById('table-body').innerHTML = rows;
+                    } else document.getElementById('table-body').innerHTML = `<tr><td colspan="4" style="color:red;">에러: ${res.message}</td></tr>`;
+                }).catch(err => document.getElementById('table-body').innerHTML = `<tr><td colspan="4" style="color:red;">통신 오류</td></tr>`);
+            }
+        </script>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: himedia-3tier
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: nginx
+    tier: frontend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deploy
+  namespace: himedia-3tier
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        app: nginx
+        tier: frontend
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector: { matchExpressions: [{ key: app, operator: In, values: [nginx] }] }
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        lifecycle:
+          preStop:
+            exec: { command: ["sleep", "5"] }
+        ports:
+        - containerPort: 80
+        resources:
+          requests: { cpu: 100m, memory: 64Mi }
+          limits: { cpu: 200m, memory: 128Mi }
+        livenessProbe:
+          httpGet: { path: /, port: 80 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet: { path: /, port: 80 }
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: frontend-vol
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+        - name: frontend-vol
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+      volumes:
+      - name: frontend-vol
+        configMap:
+          name: frontend-config

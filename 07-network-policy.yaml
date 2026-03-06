@@ -1,0 +1,76 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: strict-policy
+  namespace: himedia-3tier
+spec:
+  endpointSelector: {}
+  ingress:
+  - {} # Default Deny All Ingress
+  egress:
+  - {} # Default Deny All Egress
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: himedia-3tier
+spec:
+  endpointSelector: {}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s:k8s-app: kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: ANY}]
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: 3tier-flow
+  namespace: himedia-3tier
+spec:
+  # 1. Frontend: World Ingress(80) / Backend Egress(5000)
+  endpointSelector: { matchLabels: { tier: frontend } }
+  ingress:
+  - fromEntities: [world, cluster]
+    toPorts: [{ ports: [{ port: "80", protocol: TCP }] }]
+  egress:
+  - toEndpoints: [{ matchLabels: { tier: backend } }]
+    toPorts: [{ ports: [{ port: "5000", protocol: TCP }] }]
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: backend-flow
+  namespace: himedia-3tier
+spec:
+  # 2. Backend: Frontend Ingress(5000) / DB Egress(3306) + World Egress(443, 80)
+  endpointSelector: { matchLabels: { tier: backend } }
+  ingress:
+  - fromEndpoints: [{ matchLabels: { tier: frontend } }]
+    toPorts: [{ ports: [{ port: "5000", protocol: TCP }] }]
+  egress:
+  - toEndpoints: [{ matchLabels: { tier: database } }]
+    toPorts: [{ ports: [{ port: "3306", protocol: TCP }] }]
+  # pip install을 위한 외부 인터넷 통신 허용 추가
+  - toEntities: [world]
+    toPorts: 
+    - ports: 
+      - port: "443"
+        protocol: TCP
+      - port: "80"
+        protocol: TCP
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: database-flow
+  namespace: himedia-3tier
+spec:
+  # 3. Database: Backend Ingress(3306)
+  endpointSelector: { matchLabels: { tier: database } }
+  ingress:
+  - fromEndpoints: [{ matchLabels: { tier: backend } }]
+    toPorts: [{ ports: [{ port: "3306", protocol: TCP }] }]
